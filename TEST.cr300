@@ -1,0 +1,1757 @@
+'2019-04-16 18:11:33.604045
+
+' PGM TOPCON
+'PAR MEG
+'2018-01-17 Andor Los->Topcon
+'Added some program code to allow viewing data communication live on a second serial port of the logger
+'some subroutines were introduced and a spyport function added.
+'By writting a string to the routine WriteStatusMSG() you can follow program flow and comport commands for exmaple
+'  To do so ensure that you write to this routine whenever you send (SerialOut) or receive(SerialIn) anything to the station comport
+'currently the WriteStatusMSG() routine writes a daily coms log file to the CPU drive
+'It will clean up any old files after 14 daysan, expected around 2MB per day maximum
+'- Added extra table to log upto 10000 strings of communication and comments for debug purposes, which is about 12 hours of continues measuring
+
+'date: 12-May-2017
+'program author:Andor Los, Topcon Coorporation
+
+ConstTable StationSettingsTable
+Const cMyComPort = Com1 'Com1
+EndConstTable
+
+Const cTimer_CMD = 1
+Const cMaxComsLen = 256
+
+'Flag used when a function completed successful
+Const RC_OK = 0
+Const ce_NoData = -99999
+Const ce_OutOfRange = -99998
+Const RC_ERROR = -99997
+Const ce_NoData2 = -99995
+
+Const cstr_Unknown = "unknown"
+
+'Some constant declaration for strings
+Const cLF = CHR(10)
+Const cCR = CHR(13)
+Const cCRLF = cCR & cLF
+Const cNAK = CHR(21)
+Const cACK = CHR(6)
+
+'Just some flag or the coms routines
+Const cCom_HasACK = 1
+Const cCom_HasNAK = 2
+Const cCom_HasChr = 3
+
+
+Public ProgVer As String = "AML_r1"
+ReadOnly ProgVer
+
+'Declare Public Variables
+Public PTemp, batt_volt,OA3402P_STA1_timerMesures,OA3402P_STA1_Voltage,OA3402P_STA1_BulleX,OA3402P_STA1_BulleY,OA3402P_STA1_Frequence
+Public debug1
+
+'nombre de Prisme
+Const PrismCount = 28
+Const LaserCount = 9
+Public Seuil_distance = 0.2
+' Nom de station = STA1
+
+'compteur pour le modem
+'Public TimeCount
+'Public  timeC  As Boolean
+'Public  timeNow  As Boolean
+'Public time
+
+'>>>>>>>>>>>>>>>>>> I M P O R T A  N T   N O T E <<<<<<<<<<<<<<<<<<<<<
+'The below vairablen were declared as long, therefore loosing the decimal positioning value
+'This would cause the instrument not to position to the actual required position and would result in 
+'- more search time
+' possibly measuring wrong prism
+Dim LaserHAR(LaserCount) As String
+Dim LaserVt(LaserCount) As String
+Public LaserDist(LaserCount) As Float
+Dim LASERConst(LaserCount) As Float
+Dim LASERAperture(LaserCount) As Long
+Dim PrismHAR(PrismCount) As Float
+Dim PrismVt(PrismCount) As Float
+Dim PrismDist(PrismCount) As Float
+Dim PrismConst(PrismCount) As Float
+Dim PrismAperture(PrismCount) As Long
+
+'tableau de mesure
+
+Dim PrismHARF2(PrismCount) As Float
+Dim PrismVtF2(PrismCount) As Float
+'>>>>>>>>>>> E N D   O F  I M P O R T A N T   N O T E <<<<<<<<<<<<<<<<<<
+Public Result_HzLaser(LaserCount) As Float
+Public Result_VtLaser(LaserCount) As Float
+Public Result_SDLaser(LaserCount) As Float
+Public Result_Z(LaserCount) As Float
+Public Result_Z0(LaserCount) As Float
+Public Z As Float
+Public Result_Hz(PrismCount) As Float
+Public Result_Vt(PrismCount) As Float
+Public Result_SD(PrismCount) As Float
+Public Result_HzF2(PrismCount) As Float
+Public Result_VtF2(PrismCount) As Float
+Public Result_SDF2(PrismCount) As Float
+Public Temp,Pressure,Humidity
+'Some variablen for program and flow control
+'variable pour demmarer le TOPCON
+Public TurnOn As Boolean = False
+'arrete  la fin de mesure
+Public TurnOFF As Boolean = False
+Public Station_IsON As Boolean = False
+ReadOnly Station_IsON
+
+'lire le compensateur
+Public ReadCompensator As Boolean = False
+'Information de la batterie
+Public GetPowerSourceInfo As Boolean = False
+'Commence la mesure
+Public StartMeasuring As Boolean = False 'Only start the measuring routine, assumes station is on and initialized
+Public StartMeasuring_FullInit As Boolean = False 'Starts measuring with full initialisation
+Public IsMeasuring As Boolean = False
+ReadOnly IsMeasuring
+Public InitializeInstrument As Boolean  = False
+Public CancelMeasuringByUser As Boolean = False
+
+Public CurPtName As String * 24
+ReadOnly CurPtName
+Dim VarPtr As Long
+Dim PrismPtr As Long
+
+
+'chercher la fenetre de Prisme
+Public searchWindow As Boolean = true
+
+Public valeur As Float
+Public valeur1 As Float
+Public valeur2 As Float
+
+Public SinglePrismSettings = false
+Public AllPrismSendSettings = true
+
+'##################################Paramètres météo##################################
+
+Alias Temp = OA3402P_STA1_Temperature
+Alias Pressure = OA3402P_STA1_Pressure
+Alias Humidity = OA3402P_STA1_Humidity
+
+'======================Face1================================
+Alias Result_Hz(1)=OA3402P_STA1_MPO001_F1_Hz
+Alias Result_Hz(2)=OA3402P_STA1_MPO002_F1_Hz
+Alias Result_Hz(3)=OA3402P_STA1_MPO003_F1_Hz
+Alias Result_Hz(4)=OA3402P_STA1_MPO004_F1_Hz
+Alias Result_Hz(5)=OA3402P_STA1_MPO005_F1_Hz
+Alias Result_Hz(6)=OA3402P_STA1_MPO006_F1_Hz
+Alias Result_Hz(7)=OA3402P_STA1_MPO007_F1_Hz
+Alias Result_Hz(8)=OA3402P_STA1_MPO008_F1_Hz
+Alias Result_Hz(9)=OA3402P_STA1_MPO009_F1_Hz
+Alias Result_Hz(10)=OA3402P_STA1_MPO010_F1_Hz
+Alias Result_Hz(11)=OA3402P_STA1_MPO011_F1_Hz
+Alias Result_Hz(12)=OA3402P_STA1_MPO012_F1_Hz
+Alias Result_Hz(13)=OA3402P_STA1_MPO013_F1_Hz
+Alias Result_Hz(14)=OA3402P_STA1_MPO014_F1_Hz
+Alias Result_Hz(15)=OA3402P_STA1_MPO015_F1_Hz
+Alias Result_Hz(16)=OA3402P_STA1_MPO016_F1_Hz
+Alias Result_Hz(17)=OA3402P_STA1_MPO017_F1_Hz
+Alias Result_Hz(18)=OA3402P_STA1_MPO018_F1_Hz
+Alias Result_Hz(19)=OA3402P_STA1_MPO019_F1_Hz
+Alias Result_Hz(20)=OA3402P_STA1_MPO020_F1_Hz
+Alias Result_Hz(21)=OA3402P_STA1_MPO021_F1_Hz
+Alias Result_Hz(22)=OA3402P_STA1_MPO022_F1_Hz
+Alias Result_Hz(23)=OA3402P_STA1_MPO023_F1_Hz
+Alias Result_Hz(24)=OA3402P_STA1_MPO024_F1_Hz
+Alias Result_Hz(25)=OA3402P_STA1_MPO025_F1_Hz
+Alias Result_Hz(26)=OA3402P_STA1_MPO026_F1_Hz
+Alias Result_Hz(27)=OA3402P_STA1_MPO027_F1_Hz
+Alias Result_Hz(28)=OA3402P_STA1_MPO028_F1_Hz
+
+Alias Result_Vt(1)=OA3402P_STA1_MPO001_F1_Vt
+Alias Result_Vt(2)=OA3402P_STA1_MPO002_F1_Vt
+Alias Result_Vt(3)=OA3402P_STA1_MPO003_F1_Vt
+Alias Result_Vt(4)=OA3402P_STA1_MPO004_F1_Vt
+Alias Result_Vt(5)=OA3402P_STA1_MPO005_F1_Vt
+Alias Result_Vt(6)=OA3402P_STA1_MPO006_F1_Vt
+Alias Result_Vt(7)=OA3402P_STA1_MPO007_F1_Vt
+Alias Result_Vt(8)=OA3402P_STA1_MPO008_F1_Vt
+Alias Result_Vt(9)=OA3402P_STA1_MPO009_F1_Vt
+Alias Result_Vt(10)=OA3402P_STA1_MPO010_F1_Vt
+Alias Result_Vt(11)=OA3402P_STA1_MPO011_F1_Vt
+Alias Result_Vt(12)=OA3402P_STA1_MPO012_F1_Vt
+Alias Result_Vt(13)=OA3402P_STA1_MPO013_F1_Vt
+Alias Result_Vt(14)=OA3402P_STA1_MPO014_F1_Vt
+Alias Result_Vt(15)=OA3402P_STA1_MPO015_F1_Vt
+Alias Result_Vt(16)=OA3402P_STA1_MPO016_F1_Vt
+Alias Result_Vt(17)=OA3402P_STA1_MPO017_F1_Vt
+Alias Result_Vt(18)=OA3402P_STA1_MPO018_F1_Vt
+Alias Result_Vt(19)=OA3402P_STA1_MPO019_F1_Vt
+Alias Result_Vt(20)=OA3402P_STA1_MPO020_F1_Vt
+Alias Result_Vt(21)=OA3402P_STA1_MPO021_F1_Vt
+Alias Result_Vt(22)=OA3402P_STA1_MPO022_F1_Vt
+Alias Result_Vt(23)=OA3402P_STA1_MPO023_F1_Vt
+Alias Result_Vt(24)=OA3402P_STA1_MPO024_F1_Vt
+Alias Result_Vt(25)=OA3402P_STA1_MPO025_F1_Vt
+Alias Result_Vt(26)=OA3402P_STA1_MPO026_F1_Vt
+Alias Result_Vt(27)=OA3402P_STA1_MPO027_F1_Vt
+Alias Result_Vt(28)=OA3402P_STA1_MPO028_F1_Vt
+
+Alias Result_SD(1)=OA3402P_STA1_MPO001_F1_SD
+Alias Result_SD(2)=OA3402P_STA1_MPO002_F1_SD
+Alias Result_SD(3)=OA3402P_STA1_MPO003_F1_SD
+Alias Result_SD(4)=OA3402P_STA1_MPO004_F1_SD
+Alias Result_SD(5)=OA3402P_STA1_MPO005_F1_SD
+Alias Result_SD(6)=OA3402P_STA1_MPO006_F1_SD
+Alias Result_SD(7)=OA3402P_STA1_MPO007_F1_SD
+Alias Result_SD(8)=OA3402P_STA1_MPO008_F1_SD
+Alias Result_SD(9)=OA3402P_STA1_MPO009_F1_SD
+Alias Result_SD(10)=OA3402P_STA1_MPO010_F1_SD
+Alias Result_SD(11)=OA3402P_STA1_MPO011_F1_SD
+Alias Result_SD(12)=OA3402P_STA1_MPO012_F1_SD
+Alias Result_SD(13)=OA3402P_STA1_MPO013_F1_SD
+Alias Result_SD(14)=OA3402P_STA1_MPO014_F1_SD
+Alias Result_SD(15)=OA3402P_STA1_MPO015_F1_SD
+Alias Result_SD(16)=OA3402P_STA1_MPO016_F1_SD
+Alias Result_SD(17)=OA3402P_STA1_MPO017_F1_SD
+Alias Result_SD(18)=OA3402P_STA1_MPO018_F1_SD
+Alias Result_SD(19)=OA3402P_STA1_MPO019_F1_SD
+Alias Result_SD(20)=OA3402P_STA1_MPO020_F1_SD
+Alias Result_SD(21)=OA3402P_STA1_MPO021_F1_SD
+Alias Result_SD(22)=OA3402P_STA1_MPO022_F1_SD
+Alias Result_SD(23)=OA3402P_STA1_MPO023_F1_SD
+Alias Result_SD(24)=OA3402P_STA1_MPO024_F1_SD
+Alias Result_SD(25)=OA3402P_STA1_MPO025_F1_SD
+Alias Result_SD(26)=OA3402P_STA1_MPO026_F1_SD
+Alias Result_SD(27)=OA3402P_STA1_MPO027_F1_SD
+Alias Result_SD(28)=OA3402P_STA1_MPO028_F1_SD
+
+'==============Face 2 ================
+
+Alias Result_HzF2(1)=OA3402P_STA1_MPO001_F2_Hz
+Alias Result_HzF2(2)=OA3402P_STA1_MPO002_F2_Hz
+Alias Result_HzF2(3)=OA3402P_STA1_MPO003_F2_Hz
+Alias Result_HzF2(4)=OA3402P_STA1_MPO004_F2_Hz
+Alias Result_HzF2(5)=OA3402P_STA1_MPO005_F2_Hz
+Alias Result_HzF2(6)=OA3402P_STA1_MPO006_F2_Hz
+Alias Result_HzF2(7)=OA3402P_STA1_MPO007_F2_Hz
+Alias Result_HzF2(8)=OA3402P_STA1_MPO008_F2_Hz
+Alias Result_HzF2(9)=OA3402P_STA1_MPO009_F2_Hz
+Alias Result_HzF2(10)=OA3402P_STA1_MPO010_F2_Hz
+Alias Result_HzF2(11)=OA3402P_STA1_MPO011_F2_Hz
+Alias Result_HzF2(12)=OA3402P_STA1_MPO012_F2_Hz
+Alias Result_HzF2(13)=OA3402P_STA1_MPO013_F2_Hz
+Alias Result_HzF2(14)=OA3402P_STA1_MPO014_F2_Hz
+Alias Result_HzF2(15)=OA3402P_STA1_MPO015_F2_Hz
+Alias Result_HzF2(16)=OA3402P_STA1_MPO016_F2_Hz
+Alias Result_HzF2(17)=OA3402P_STA1_MPO017_F2_Hz
+Alias Result_HzF2(18)=OA3402P_STA1_MPO018_F2_Hz
+Alias Result_HzF2(19)=OA3402P_STA1_MPO019_F2_Hz
+Alias Result_HzF2(20)=OA3402P_STA1_MPO020_F2_Hz
+Alias Result_HzF2(21)=OA3402P_STA1_MPO021_F2_Hz
+Alias Result_HzF2(22)=OA3402P_STA1_MPO022_F2_Hz
+Alias Result_HzF2(23)=OA3402P_STA1_MPO023_F2_Hz
+Alias Result_HzF2(24)=OA3402P_STA1_MPO024_F2_Hz
+Alias Result_HzF2(25)=OA3402P_STA1_MPO025_F2_Hz
+Alias Result_HzF2(26)=OA3402P_STA1_MPO026_F2_Hz
+Alias Result_HzF2(27)=OA3402P_STA1_MPO027_F2_Hz
+Alias Result_HzF2(28)=OA3402P_STA1_MPO028_F2_Hz
+
+Alias Result_VtF2(1)=OA3402P_STA1_MPO001_F2_Vt
+Alias Result_VtF2(2)=OA3402P_STA1_MPO002_F2_Vt
+Alias Result_VtF2(3)=OA3402P_STA1_MPO003_F2_Vt
+Alias Result_VtF2(4)=OA3402P_STA1_MPO004_F2_Vt
+Alias Result_VtF2(5)=OA3402P_STA1_MPO005_F2_Vt
+Alias Result_VtF2(6)=OA3402P_STA1_MPO006_F2_Vt
+Alias Result_VtF2(7)=OA3402P_STA1_MPO007_F2_Vt
+Alias Result_VtF2(8)=OA3402P_STA1_MPO008_F2_Vt
+Alias Result_VtF2(9)=OA3402P_STA1_MPO009_F2_Vt
+Alias Result_VtF2(10)=OA3402P_STA1_MPO010_F2_Vt
+Alias Result_VtF2(11)=OA3402P_STA1_MPO011_F2_Vt
+Alias Result_VtF2(12)=OA3402P_STA1_MPO012_F2_Vt
+Alias Result_VtF2(13)=OA3402P_STA1_MPO013_F2_Vt
+Alias Result_VtF2(14)=OA3402P_STA1_MPO014_F2_Vt
+Alias Result_VtF2(15)=OA3402P_STA1_MPO015_F2_Vt
+Alias Result_VtF2(16)=OA3402P_STA1_MPO016_F2_Vt
+Alias Result_VtF2(17)=OA3402P_STA1_MPO017_F2_Vt
+Alias Result_VtF2(18)=OA3402P_STA1_MPO018_F2_Vt
+Alias Result_VtF2(19)=OA3402P_STA1_MPO019_F2_Vt
+Alias Result_VtF2(20)=OA3402P_STA1_MPO020_F2_Vt
+Alias Result_VtF2(21)=OA3402P_STA1_MPO021_F2_Vt
+Alias Result_VtF2(22)=OA3402P_STA1_MPO022_F2_Vt
+Alias Result_VtF2(23)=OA3402P_STA1_MPO023_F2_Vt
+Alias Result_VtF2(24)=OA3402P_STA1_MPO024_F2_Vt
+Alias Result_VtF2(25)=OA3402P_STA1_MPO025_F2_Vt
+Alias Result_VtF2(26)=OA3402P_STA1_MPO026_F2_Vt
+Alias Result_VtF2(27)=OA3402P_STA1_MPO027_F2_Vt
+Alias Result_VtF2(28)=OA3402P_STA1_MPO028_F2_Vt
+
+Alias Result_SDF2(1)=OA3402P_STA1_MPO001_F2_SD
+Alias Result_SDF2(2)=OA3402P_STA1_MPO002_F2_SD
+Alias Result_SDF2(3)=OA3402P_STA1_MPO003_F2_SD
+Alias Result_SDF2(4)=OA3402P_STA1_MPO004_F2_SD
+Alias Result_SDF2(5)=OA3402P_STA1_MPO005_F2_SD
+Alias Result_SDF2(6)=OA3402P_STA1_MPO006_F2_SD
+Alias Result_SDF2(7)=OA3402P_STA1_MPO007_F2_SD
+Alias Result_SDF2(8)=OA3402P_STA1_MPO008_F2_SD
+Alias Result_SDF2(9)=OA3402P_STA1_MPO009_F2_SD
+Alias Result_SDF2(10)=OA3402P_STA1_MPO010_F2_SD
+Alias Result_SDF2(11)=OA3402P_STA1_MPO011_F2_SD
+Alias Result_SDF2(12)=OA3402P_STA1_MPO012_F2_SD
+Alias Result_SDF2(13)=OA3402P_STA1_MPO013_F2_SD
+Alias Result_SDF2(14)=OA3402P_STA1_MPO014_F2_SD
+Alias Result_SDF2(15)=OA3402P_STA1_MPO015_F2_SD
+Alias Result_SDF2(16)=OA3402P_STA1_MPO016_F2_SD
+Alias Result_SDF2(17)=OA3402P_STA1_MPO017_F2_SD
+Alias Result_SDF2(18)=OA3402P_STA1_MPO018_F2_SD
+Alias Result_SDF2(19)=OA3402P_STA1_MPO019_F2_SD
+Alias Result_SDF2(20)=OA3402P_STA1_MPO020_F2_SD
+Alias Result_SDF2(21)=OA3402P_STA1_MPO021_F2_SD
+Alias Result_SDF2(22)=OA3402P_STA1_MPO022_F2_SD
+Alias Result_SDF2(23)=OA3402P_STA1_MPO023_F2_SD
+Alias Result_SDF2(24)=OA3402P_STA1_MPO024_F2_SD
+Alias Result_SDF2(25)=OA3402P_STA1_MPO025_F2_SD
+Alias Result_SDF2(26)=OA3402P_STA1_MPO026_F2_SD
+Alias Result_SDF2(27)=OA3402P_STA1_MPO027_F2_SD
+Alias Result_SDF2(28)=OA3402P_STA1_MPO028_F2_SD
+
+'========ALIAS Laser===============
+Alias Result_Z0(1)=OA3402P_STA1_LAS001
+Alias Result_Z0(2)=OA3402P_STA1_LAS002
+Alias Result_Z0(3)=OA3402P_STA1_LAS003
+Alias Result_Z0(4)=OA3402P_STA1_LAS004
+Alias Result_Z0(5)=OA3402P_STA1_LAS005
+Alias Result_Z0(6)=OA3402P_STA1_LAS006
+Alias Result_Z0(7)=OA3402P_STA1_LAS007
+Alias Result_Z0(8)=OA3402P_STA1_LAS008
+Alias Result_Z0(9)=OA3402P_STA1_LAS009
+
+Sub Declaration_Prism
+  PrismHAR(1)=182.176
+  PrismHAR(2)=200.543
+  PrismHAR(3)=203.773
+  PrismHAR(4)=202.686
+  PrismHAR(5)=227.667
+  PrismHAR(6)=230.005
+  PrismHAR(7)=230.659
+  PrismHAR(8)=233.762
+  PrismHAR(9)=233.912
+  PrismHAR(10)=304.36
+  PrismHAR(11)=221.414
+  PrismHAR(12)=228.073
+  PrismHAR(13)=222.268
+  PrismHAR(14)=217.253
+  PrismHAR(15)=228.387
+  PrismHAR(16)=226.714
+  PrismHAR(17)=200.223
+  PrismHAR(18)=109.03
+  PrismHAR(19)=6.457
+  PrismHAR(20)=350.734
+  PrismHAR(21)=343.919
+  PrismHAR(22)=308.43
+  PrismHAR(23)=314.871
+  PrismHAR(24)=341.44
+  PrismHAR(25)=341.424
+  PrismHAR(26)=343.939
+  PrismHAR(27)=343.919
+  PrismHAR(28)=308.43
+
+'Vt
+
+  PrismVt(1)=103.107
+  PrismVt(2)=102.82
+  PrismVt(3)=102.008
+  PrismVt(4)=101.477
+  PrismVt(5)=101.816
+  PrismVt(6)=102.72
+  PrismVt(7)=102.607
+  PrismVt(8)=107.147
+  PrismVt(9)=130.885
+  PrismVt(10)=105.417
+  PrismVt(11)=106.692
+  PrismVt(12)=106.779
+  PrismVt(13)=107.047
+  PrismVt(14)=110.027
+  PrismVt(15)=109.263
+  PrismVt(16)=115.291
+  PrismVt(17)=119.589
+  PrismVt(18)=139.175
+  PrismVt(19)=123.239
+  PrismVt(20)=97.361
+  PrismVt(21)=97.901
+  PrismVt(22)=97.696
+  PrismVt(23)=97.696
+  PrismVt(24)=101.536
+  PrismVt(25)=98.111
+  PrismVt(26)=101.746
+  PrismVt(27)=97.901
+  PrismVt(28)=97.696
+
+'Distances
+
+  PrismDist(1)= 30.515
+  PrismDist(2)= 31.305
+  PrismDist(3)= 58.195
+  PrismDist(4)= 74.012
+  PrismDist(5)= 57.132
+  PrismDist(6)= 52.389
+  PrismDist(7)= 52.347
+  PrismDist(8)= 11.347
+  PrismDist(9)= 2.699
+  PrismDist(10)= 12.097
+  PrismDist(11)= 48.535
+  PrismDist(12)= 48.845
+  PrismDist(13)= 45.829
+  PrismDist(14)= 32.21
+  PrismDist(15)= 35.158
+  PrismDist(16)= 20.634
+  PrismDist(17)= 16.132
+  PrismDist(18)= 8.17
+  PrismDist(19)= 13.981
+  PrismDist(20)= 49.241
+  PrismDist(21)= 62.439
+  PrismDist(22)= 133.815
+  PrismDist(23)= 131.972
+  PrismDist(24)= 69.484
+  PrismDist(25)= 69.52
+  PrismDist(26)= 62.405
+  PrismDist(27)= 62.439
+  PrismDist(28)= 133.815
+
+  '''' Constante du Prisme
+  PrismConst(1)= -25.5
+
+  ''' Prism Aperture
+  PrismAperture(1)= 58
+
+EndSub
+
+Sub Declaration_Laser
+
+  LaserHAR(1)="221.4136"
+  LaserHAR(2)="228.0716"
+  LaserHAR(3)="222.2685"
+  LaserHAR(4)="217.2521"
+  LaserHAR(5)="228.3872"
+  LaserHAR(6)="226.7140"
+  LaserHAR(7)="200.2237"
+  LaserHAR(8)="109.0278"
+  LaserHAR(9)="006.4561"
+
+'Vt
+
+  LaserVt(1)="106.6917"
+  LaserVt(2)="106.7781"
+  LaserVt(3)="107.0523"
+  LaserVt(4)="110.0258"
+  LaserVt(5)="109.2653"
+  LaserVt(6)="115.2910"
+  LaserVt(7)="119.5934"
+  LaserVt(8)="139.1764"
+  LaserVt(9)="123.2380"
+
+'Distances
+
+  LaserDist(1)= 0
+  LaserDist(2)= 0
+  LaserDist(3)= 0
+  LaserDist(4)= 0
+  LaserDist(5)= 0
+  LaserDist(6)= 0
+  LaserDist(7)= 0
+  LaserDist(8)= 0
+  LaserDist(9)= 0
+
+''' Constante du Prisme
+  LASERConst(1)= 0
+
+  ''' Prism Aperture
+  LASERAperture(1)= 0
+EndSub
+
+Public Bool_AllIsOkay = false
+Public Bool_searchWindow = false
+Public Bool_GetBubbleReadings = false
+Public Bool_GetPowerSourceInfo =  false
+Public Bool_SinglePrismSettings = false
+Public Bool_ALL_PrismSettings = false
+
+'
+Public ack As String * 30
+Public CommandeEnvoyee As String * 30
+Public mesureArretee As String * 30
+
+
+'Dim CurrentPrism As String
+'Dim CurrentReadingNum As Long
+'Dim currentFaceID As Long
+
+Dim currentErrorCode As Long
+
+'Dim ReadingData(3)
+
+'Public ReadingNum
+
+'>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+'This was declared as Long but should have been float
+'Dim CurrentPrismConst As Long
+Dim CurrentPrismConst As Float
+'<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+'Alias CurrentPrism = TO
+'Alias CurrentReadingNum = ReadingNum
+'Alias currentFaceID = Face_ID
+'Alias ReadingData(1) = Hz
+'Alias ReadingData(2) = Vt
+'Alias ReadingData(3) = SDCor
+'Alias currentErrorCode = ErrorCode
+'Alias Temp = Temp
+'Alias Pressure = Pressure
+'Alias Humidity = Humidity
+
+Public StrToSend As String * 128
+ReadOnly StrToSend
+
+Public SendManual_StrToSend As String * cMaxComsLen
+Public SendManualStr As Boolean = False
+Public SendManual_ACKTime As Long = 5
+Public SendManual_StrReplyTime As Long = 30
+Public SendManual_StationReply As String * cMaxComsLen
+
+
+'Status indicator
+Public AllIsOkay As Long
+Public ErrCode As Long
+Public nombre
+Public i As Long
+Public a As Long
+Public b As Long
+'Some variablen to store information from the instrument
+Public InstrumentName As String * 64
+Public SN As String * 16
+Public ROMVersion As Long
+Public EDMROMVersion As Long
+
+Public StationPowerSource As String * 16
+Public StationPowerStatus As String * 8
+Public StationBatteryPercent As Long
+Public StationVoltage As Float
+
+Dim BubbleData(5) As Float
+Alias BubbleData(1) = Bubble_HzPos
+Alias BubbleData(2) = Bubble_VtPos
+'Alias BubbleData(3) = NotUsed
+Alias BubbleData(4) = Bubble_X
+Alias BubbleData(5) = Bubble_Y
+
+'Public ManualPos_Hz(PrismCount) As Float
+'Public ManualPos_Vt(PrismCount) As Float
+
+'For Debug purposes, make DIM when all is working
+Public ComStr As String * cMaxComsLen
+
+Public NB_ref = -1
+Public NB_ref_OK = -1
+Public Taux_Visees = -1
+Public Taux_Visees_Sans_Ref = -1
+Public t = 0
+
+DataTable (RawData,True,-1) 'Set table size to # of records, or -1 to autoallocate.
+  Sample (1,Temp,FP2)
+  Sample (1,Pressure,FP2)
+  Sample (1,Humidity,FP2)
+  Sample (1,OA3402P_STA1_timerMesures,FP2)
+Sample (1,OA3402P_STA1_Voltage,FP2)
+Sample (1,OA3402P_STA1_BulleX,FP2)
+Sample (1,OA3402P_STA1_BulleY,FP2)
+Sample (1,OA3402P_STA1_Frequence,FP2)
+Sample(PrismCount,Result_Hz,IEEE4)
+  Sample(PrismCount,Result_Vt,IEEE4)
+  Sample(PrismCount,Result_SD,IEEE4)
+  Sample(PrismCount,Result_HzF2,IEEE4)
+  Sample(PrismCount,Result_VtF2,IEEE4)
+  Sample(PrismCount,Result_SDF2,IEEE4)
+EndTable
+DataTable (RawDataCOMPLET,True,-1) 'Set table size to # of records, or -1 to autoallocate.
+  Sample (1,Temp,FP2)
+  Sample (1,Pressure,FP2)
+  Sample (1,Humidity,FP2)
+  Sample (1,OA3402P_STA1_timerMesures,FP2)
+Sample (1,OA3402P_STA1_Voltage,FP2)
+Sample (1,OA3402P_STA1_BulleX,FP2)
+Sample (1,OA3402P_STA1_BulleY,FP2)
+Sample (1,OA3402P_STA1_Frequence,FP2)
+Sample(PrismCount,Result_Hz,IEEE4)
+  Sample(PrismCount,Result_Vt,IEEE4)
+  Sample(PrismCount,Result_SD,IEEE4)
+  Sample(PrismCount,Result_HzF2,IEEE4)
+  Sample(PrismCount,Result_VtF2,IEEE4)
+  Sample(PrismCount,Result_SDF2,IEEE4)
+  Sample(LaserCount,Result_Z0,IEEE4)
+EndTable
+DataTable (LASER_RawData,True,-1) 'Set table size to # of records, or -1 to autoallocate.
+  Sample (LaserCount,Result_HzLaser,IEEE4)
+  Sample (LaserCount,Result_VtLaser,IEEE4)
+  Sample (LaserCount,Result_SDLaser,IEEE4)
+  Sample (LaserCount,Result_Z,IEEE4)
+  Sample (LaserCount,Result_Z0,IEEE4)
+EndTable
+DataTable (LASER,True,-1) 'Set table size to # of records, or -1 to autoallocate.
+  Sample (LaserCount,Result_Z0,IEEE4)
+EndTable
+DataTable (StationBubble,True,240) 'Set table size to # of records, or -1 to autoallocate.
+  Sample (1,Bubble_HzPos,IEEE4)
+  Sample (1,Bubble_VtPos,IEEE4)
+  Sample (1,Bubble_X,IEEE4)
+  Sample (1,Bubble_Y,IEEE4)
+EndTable
+DataTable (Ref_TauxVisees,True,-1) 'Set table size to # of records, or -1 to autoallocate.
+  Sample (1,NB_ref,IEEE4)
+  Sample (1,NB_ref_OK,IEEE4)
+  Sample (1,Taux_visees,IEEE4)
+  Sample (1,Taux_Visees_Sans_REF,IEEE4)
+EndTable
+DataTable (StationInfo,True,240) 'Set table size to # of records, or -1 to autoallocate.
+  Sample (1,InstrumentName,String)
+  Sample (1,SN,String)
+  Sample (1,EDMROMVersion,Long)
+  Sample (1,ROMVersion,Long)
+  Sample (1,StationPowerSource,String)
+  Sample (1,StationVoltage,FP2)
+  Sample (1,StationBatteryPercent,FP2)
+EndTable
+
+DataTable (MSGLog,True,10000) 'Set table size to # of records, or -1 to autoallocate.
+  Sample (1,StatusMSG,String)
+EndTable
+'Table and variable to support filemanaging of log files
+Dim MSG_CurTime As Long
+DataTable(TimeTable,true,1)
+    TableHide
+    Sample(1,MSG_CurTime,NSEC)
+EndTable
+
+'Switch on Topcon instrument
+'Command => *PON
+'Parameters => None
+'Response => "OK"
+'Max response time => 2+15
+'Example CMD => "*PON"
+Const cTopcon_SwitchOnWaitDelay = 30
+Sub SwitchOnRTS(retSuccess As Long)
+  Dim lcOne As Long
+  Dim GotReply As Boolean
+  Dim ComResult As Long
+  Dim SingleChar As String * 1
+  Dim TimerValue As Long = 195000
+
+  retSuccess = RC_ERROR
+
+  Call WriteStatusMSG("Turning instrument ON")
+  SerialFlush(cMyComPort)
+  ComStr = cCRLF
+  SerialOut(cMyComPort,ComStr,"",0,0)
+  Call WriteStatusMSG("[Tx]" & ComStr)
+
+  Timer(cTimer_CMD,uSec,2)
+  Delay(0,100,mSec)
+  GotReply = False
+  lcOne = 0
+
+  'Start here a loop with precise timing for sending the PON command to the instrument
+  'As soon as we receive the ACK reply we jump out of the loop and will start waiting for the 'OK' to indicate the instrument has booted up
+  ComStr = "*PON" & cCRLF
+  
+  Do While lcOne < 40
+    If Timer(cTimer_CMD,uSec,4) >= TimerValue Then
+      'SerialOut(cMyComPort,"*PON" & cCRLF,"",0,0)
+      SerialOut(cMyComPort,ComStr,"",0,0)
+      Timer(cTimer_CMD,uSec,2)
+      lcOne += 1
+      Call WriteStatusMSG("[Tx]" & ComStr) 'place here AFTER starting the timer to not compromise the power ON procedure timings
+    Else
+      Delay(1,10,mSec)
+    EndIf
+    If SerialInChk(cMyComPort) > 0 Then
+      'This charackter could be the ACK reply
+      GotReply = True
+      ExitDo
+    EndIf
+  Loop
+
+  'Restart the timer as we will use the reply speed to see if the instrument was already on
+  Timer(cTimer_CMD,uSec,2)
+
+  If GotReply Then
+    'We received a reply so now we can check what that was.
+    'If it was a ACK then we have to wait for the "OK" still
+    SerialIn(SingleChar ,cMyComPort,0,-1,1)
+
+    Select Case SingleChar
+    Case cACK : ComResult = cCom_HasACK
+    Case cNAK : ComResult = cCom_HasNAK
+    Case Else : ComResult = cCom_HasChr
+    EndSelect
+
+    ComStr = "" 'make sure it is empty
+
+    If ComResult = cCom_HasACK Then
+      'We received an ACK we now have to wait for the 'OK' to be returned
+      GotReply = False
+
+      'Start waiting for 'OK' reply this can take up to 120 seconds
+      SerialIn(ComStr ,cMyComPort,12000,cCRLF,cMaxComsLen)
+    ElseIf ComResult = cCom_HasChr Then
+      'We now only get the result once as the first recevied character might already be the 'O' of 'OK'
+      SerialIn(ComStr ,cMyComPort,100,cCRLF,cMaxComsLen)
+      ComStr = SingleChar & ComStr
+    EndIf
+    
+    Call WriteStatusMSG("[Rx]" & ComStr & "[LEN:" & Len(ComStr) & "]")
+
+    GotReply = (Len(ComStr) > 1)
+
+    If GotReply Then
+      If InStr(1,UpperCase(ComStr),"OK",2) > 0 Then
+        retSuccess = RC_OK
+      EndIf
+    EndIf
+  Else
+    retSuccess = -1
+  EndIf
+
+  'If the instrument replied instantly and the OK was received within 2 seconds then we do not have to wait
+  'as the instrument was already on when we send the *PON command
+  lcOne = Timer(cTimer_CMD,uSec,4)
+
+  If lcOne > 2000000 Then
+    'Some additional time as there might be other command being send by the instrument that we do not need here
+    Delay(0,cTopcon_SwitchOnWaitDelay,Sec)
+  EndIf
+
+  'Stop the timer again as running as uSec level uses continues processor power
+  Timer(cTimer_CMD,uSec,1)
+
+  'Empty the incomming buffer as sometimes the instrument send messages for indication of status
+  SerialFlush(cMyComPort)
+
+EndSub
+
+
+'This command is used to switch off the station
+'Command => *POFF
+'Parameters => None
+'Response => ACK and "OK"
+'Max response time => 2+15
+'Example CMD => "*POFF"
+Sub TurnOffRTS(retSuccess As Long)
+  retSuccess = RC_ERROR
+  Call WriteStatusMSG("Mettre la tete en bas")
+  ComStr = "*DHA0000000VA2000000" & cCRLF
+  SerialOut(cMyComPort,ComStr,"",0,0)
+  Delay(0,3,Sec)
+  Call WriteStatusMSG("Turning instrument OFF")
+  ComStr = "*POFF" & cCRLF
+  SerialOut(cMyComPort,ComStr,"",0,0)
+  Call WriteStatusMSG("[Tx]" & ComStr)
+  ComStr = ""
+  SerialIn(ComStr ,cMyComPort,1500,cCRLF,cMaxComsLen)
+  If Len(ComStr)> 0 Then
+    Call WriteStatusMSG("[Rx]" & ComStr)
+    If InStr(1,ComStr,"OK",2) > 0 Then
+      retSuccess = RC_OK
+    EndIf
+  EndIf
+
+  'Force here a long delay to ensure the instrument internal computer is completely shut down before maybe power is removed from the instrument
+  'Removing power to early might have bad side effects
+  Delay(1,30,Sec)
+EndSub
+
+
+'This is just a routine to allow sending some simply command as can be found in the command manual interface
+'The HasACK option allows for correct handling of a reply that has an ACK and a 'OK', such as *DHA command
+' MaxACKReplyTime -> If the instrument should return an ACK specify here the maximum time in seconds, if not specify 0
+' MaxStringReplyTime -> If the instrument should return a string specify here the maximum time in seconds, if not specify 0
+Sub SendMyCMD(retSuccess As Long, CMDToSend As String * 64, TheReply As String * 128, Optional MaxACKReplyTime As Long = 5, Optional MaxStringReplyTime As Long = 20)
+  Dim ComResult As Long
+  Dim SingleChar As String * 1
+  Dim tmrResult As Long
+
+  'Some parameter validation
+  Select Case MaxACKReplyTime
+    Case Is < 0 : MaxACKReplyTime = 0
+    Case Is > 5 : MaxACKReplyTime = 5
+  EndSelect
+  Select Case MaxStringReplyTime
+    Case Is < 0 : MaxStringReplyTime = 0
+    Case Is > 120 : MaxStringReplyTime = 120
+  EndSelect
+  
+  retSuccess = RC_ERROR
+
+  SerialFlush(cMyComPort)
+  SerialOut(cMyComPort,CMDToSend & cCRLF,"",0,0)
+  Call WriteStatusMSG("[Tx]" & CMDToSend)
+  TheReply = ""
+
+  'If the operator indicated we should expect the ACK character then handle that here
+  'otherwise skip this part simply by say we have received it
+  If MaxACKReplyTime > 0 Then
+    SingleChar = ""
+    Timer(cTimer_CMD,uSec,3)
+    tmrResult = 0
+    Do While (tmrResult < (MaxACKReplyTime*1000000))
+      SerialIn(SingleChar ,cMyComPort,100,-1,1)
+      If SingleChar <> "" Then ExitDo
+      tmrResult = Timer(cTimer_CMD,uSec,4)
+    Loop
+    
+    Timer(cTimer_CMD,uSec,1)
+    Call WriteStatusMSG("[Rx]SendCMD_SingleChar:" & SingleChar & "[END]")
+    Select Case SingleChar
+    Case cACK : ComResult = cCom_HasACK : retSuccess = RC_OK : TheReply = "ACK received"
+    Case cNAK : ComResult = cCom_HasNAK : TheReply = "ERROR->NAK"
+    Case Else : ComResult = RC_ERROR
+    EndSelect
+  Else
+    ComResult = cCom_HasACK
+  EndIf
+
+  'if we are expecting some more reply from the instrument than wait here for up to 20 seconds
+  'This 20 seconds is just a number, some measurement commands could take much longer, please refer to the command manual for more details
+    If (ComResult = cCom_HasACK) AND (MaxStringReplyTime > 0) Then
+      Timer(cTimer_CMD,uSec,3)
+      tmrResult = 0
+      Do While (tmrResult < (MaxStringReplyTime * 1000000))
+        SerialIn(ComStr ,cMyComPort,1000,cCRLF,cMaxComsLen)
+        If Len(ComStr) > 0 Then
+          TheReply = ComStr
+          retSuccess = RC_OK
+          Call WriteStatusMSG("[Rx]" & ComStr)
+          ExitDo
+        EndIf
+        tmrResult = Timer(cTimer_CMD,uSec,4)
+      Loop
+      
+      Timer(cTimer_CMD,uSec,1)
+      
+    EndIf
+
+  'Empty the incomming buffer as osmetimes the instrument send messages for indication of status
+  SerialFlush(cMyComPort)
+
+EndSub
+
+
+'Description => retrieve Instrument ID and versions
+'Command => A
+'Parameters => None
+'Response => Instrument_name, Serial_number, Rom_version, EDM_ROM_Version
+'Max response time => 2
+'Example CMD => "A"
+'Example response => "A NET05AX,100691,3208,9402{Cr}{Lf}"
+'2013-aug-07 Added a retry loop of 3 to ensure we can get the SN
+Sub GetInstrumentDetails(retSuccess As Long,InstrumentName As String, SN As String, ROMVersion As Long, EDMROMVersion As Long)
+  Dim tmpStrA(4) As String
+
+  'Initialise default return values
+  InstrumentName = "error"
+  SN = "N/A"
+  ROMVersion = 0
+  EDMROMVersion = 0
+  retSuccess = -1
+
+  'Send the command and start waiting for a reply
+  ComStr = "A" & cCRLF
+  SerialOut(cMyComPort,ComStr,"",0,0)
+  Call WriteStatusMSG("[Tx]" & ComStr)
+  Delay(0,100,mSec)
+  ComStr = ""
+  SerialIn(ComStr,cMyComPort,500,cCRLF,cMaxComsLen)'Wait up to 5 seconds for the answer
+  Call WriteStatusMSG("[Rx]" & ComStr & "[LEN:" & Len(ComStr) & "]")
+
+  'If there was a reply we will handle that here
+  If Len(ComStr) > 5 Then
+    'First remove the CMD itself, this is 'A ' with a length of 2
+    ComStr = Mid(ComStr,3,Len(ComStr)-2)
+    'Now split the string into the columns so we can return them
+    SplitStr(tmpStrA(1),ComStr,",",4,5)
+    InstrumentName = tmpStrA(1)
+    SN = tmpStrA(2)
+    ROMVersion = tmpStrA(3)
+    EDMROMVersion = tmpStrA(4)
+    retSuccess = RC_OK
+  EndIf
+EndSub
+
+
+'>>> BATTERY Data >>>>>>>
+'Command => Ej
+'Parameters => None
+'Response => BatteryType*,	BatteryStatus*,	RemainingPower(%), Voltage(Volts), Reserved, Reserved, Reserved, Reserved
+'		* BatteryType => Internal=0 External=1
+'		* BatteryStatus => Normal=0 Low Battery=1
+'Max response time => 2
+'Example CMD => "Ej"
+'Example response => "Ej 0,0,50,7.8{Cr}{Lf}" internal battery,normal level,50%, 7.8Volts
+Sub StationBatteryInfo(retSuccess As Long, PowerSource As String * 16, BattStatus As String * 8, BattLevel_Percent As Long, BattLevel_Volts As Float)
+  Dim tmpStrA(4) As String
+  'Initialise default return values
+  PowerSource = cstr_Unknown
+  BattStatus = cstr_Unknown
+  BattLevel_Percent = ce_NoData
+  BattLevel_Volts = ce_NoData
+  retSuccess = RC_ERROR
+
+  'Send the command and start waiting for a reply
+  ComStr = "Ej" & cCRLF
+  SerialOut(cMyComPort,ComStr,"",0,0)
+  Call WriteStatusMSG("[Tx]" & ComStr)
+  Delay(0,100,mSec)
+  ComStr = ""
+  SerialIn(ComStr,cMyComPort,200,cCRLF,cMaxComsLen)'Wait up to 2 seconds for the answer
+  Call WriteStatusMSG("[Rx]" & ComStr & "[LEN:" & Len(ComStr) & "]")
+
+  'If there was a reply we will handle that here
+  If Len(ComStr) > 5 Then
+    'First remove the CMD itself, this is 'Ej ' with a length of 3
+    ComStr = Mid(ComStr,4,Len(ComStr)-3)
+    'Now split the string into the columns so we can return them
+    SplitStr(tmpStrA(1),ComStr,",",4,5)
+    PowerSource = IIF(tmpstrA(1)="0","Internal","External")
+    BattStatus = IIF(tmpStrA(2)="0","Normal","Low")
+    BattLevel_Percent = tmpStrA(3)
+    BattLevel_Volts = tmpStrA(4)
+    retSuccess = RC_OK
+  EndIf
+
+EndSub
+
+
+'Description => Read Vertical,Horizontal,X-tilt and Y-tilts angle data
+'								This can be used for compensator readings
+'Command => Ee
+'Parameters => None
+'Response => Status*, fixed_value(0), Target_Height,	ppm, Vert.Angle, Hor.Angle, X-Tilt_angle, Y-Tilt_angle
+'		* Status => 4 digit integer to be read as bit field with Bit field with 4 positions
+'								(Left-to-right)
+'								Status Position 1 => Dist.units (0=Meter 1=Feet)
+'								Status Position 2 => Angle units (0=Degree 1=gon 2=mil)
+'								Status Position 3 => Vert.angle.display (0=Zenith 1=Horizontal_is_0 2=Hor._plus/minus_90)
+'								Status Position 4 => Hor. angle.display (0=Right 1=Left)
+'Max response time => 2
+'Example CMD => "Ee"
+'Error field => 5,6,7,8
+'Example response => "Ee 0100,0,0.00000,0,180.00006,180.00000,-0.01094,-0.00278{Cr}{Lf}"
+'Example response with Error => "Ee 0100,0,0.00000,0,E115,E114,E115,E114{Cr}{Lf}" Compensator is out of range
+'Cancelation only required when using repeat measurements
+Sub ReadAngleData(retSuccess As Long,Hz As Float, Vt As Float, XTilt As Float, YTilt As Float, DistUnits As Long,AngleUnits As Long,ErrCode As Long)
+  Dim tmpStrA(8) As String
+
+  retSuccess = RC_ERROR
+  ComStr = ""
+  'Send the Command 'Ee' and wait for the reply up to 2 seconds
+  ComStr = "Ee" & cCRLF
+  SerialOut(cMyComPort,ComStr,"",0,0)
+  Call WriteStatusMSG("[Tx]" & ComStr)
+  ComStr = ""
+  SerialIn(ComStr,cMyComPort,200,cCRLF,cMaxComsLen)
+  Call WriteStatusMSG("[Rx]" & ComStr & "[LEN:" & Len(ComStr) & "]")
+
+  'If we received a reply then we can continue processing
+  If Len(ComStr) > 0 Then
+    'First remove the CMD part of the returned string, this is "Ee " with a length of 3
+
+    ComStr = Mid(ComStr,4,Len(ComStr)-3)
+
+    'Now split the rest into single fields
+    SplitStr(tmpStrA(1),ComStr,",",8,5)
+
+    'If there are no errors in the 5th field (Vt angle) then continue
+    If (Left(tmpStrA(5),1)<>"E") Then
+      DistUnits = Left(tmpStrA(1),1)
+      AngleUnits = Mid(tmpStrA(1),2,1)
+
+      Vt = tmpStrA(5)
+      Hz = tmpStrA(6)
+      XTilt = tmpStrA(7)
+      YTilt = tmpStrA(8)
+      ErrCode = 0
+      retSuccess = RC_OK
+    Else
+      DistUnits = ce_NoData
+      AngleUnits = ce_NoData
+      Hz = ce_NoData
+      Vt = ce_NoData
+      XTilt = ce_NoData
+      YTilt = ce_NoData
+
+      ErrCode = Mid(tmpStrA(5),2,3) 'Remove the letter "E"
+      'Now check if it is a known error to indicate we are out of range
+      Select Case ErrCode
+      Case 114,115 : retSuccess = ce_OutOfRange
+      Case Else : retSuccess = RC_ERROR
+      EndSelect
+
+    EndIf
+  EndIf
+EndSub
+
+
+'This routine position the instrument at an specific location and then request the compensator/bubble data and returns the result as is
+'A position of 120GON by 120GON is used
+Sub GetBubbleReadingsAtPos(retSuccess As Long,retHzPos As Float, retVtPos As Float, retXtilt As Float, retYTilt As Float, ErrCode As Long)
+  Dim AngleUnits As Long, DistUnits As Long
+
+  retSuccess = RC_ERROR
+  'First position the instrument and wait for the ACK to return to indicate the command was accepted
+  SerialFlush(cMyComPort)
+  ComStr = "*DHA1200000VA1200000" & cCRLF
+  SerialOut(cMyComPort,ComStr,"",0,0)
+  Call WriteStatusMSG("[Tx]" & ComStr)
+  ComStr = ""
+  SerialIn(ComStr,cMyComPort,500,-1,1)
+  Call WriteStatusMSG("[Rx]" & ComStr & "[LEN:" & Len(ComStr) & "]")
+
+  If ComStr = cACK Then
+    'Initialise the comstr to be empty again
+    ComStr = ""
+
+    'We received ACK and now we have to wait for the 'OK' to return to indicate the instrument finished turning
+    'This can take up to 20 seconds for example
+    'Start waiting for the 'OK'
+    SerialIn(ComStr,cMyComPort,2000,cCRLF,cMaxComsLen)
+    Call WriteStatusMSG("[Rx]" & ComStr & "[LEN:" & Len(ComStr) & "]")
+
+    'If the position was reached we should receive and 'OK', now we can request for the actual compensator values
+    If Len(ComStr) > 0 Then
+      If InStr(1,ComStr,"OK",2) > 0 Then '= "OK" Then
+        Call ReadAngleData(retSuccess ,retHzPos, retVtPos,retXtilt, retYTilt, DistUnits, AngleUnits, ErrCode)
+EndIf
+    EndIf
+  EndIf
+EndSub
+
+
+'Measure at the current telescope position but search for the Prism.
+'This could be used for manual learning any observation
+'For simplicity in this example it is assumed the instrument is configured correctly for the type of prims that is used
+'Sub MeasureMakeNoPos(retSuccess As Long, retHz As Float, retVt As Float, retSD As Float, retBatt As Long, ErrCode As Long)
+'  Dim tmpStrA(5) As String
+'  Dim lcOne As Long
+'  SerialIn(ComStr,cMyComPort,6000,cCRLF,cMaxComsLen)
+'
+'  If Len(ComStr) > 10 Then
+'    'First remove the CMD part of the returned string, this is "*ST2 " with a length of 5
+'    ComStr = Mid(ComStr,6,Len(ComStr)-5)
+'
+'    'Now split the rest into single fields
+'    SplitStr(tmpStrA(1),ComStr,",",5,5)
+'
+'    'If there are no errors in the 5th field (Slope distance) then continue
+'    If (Left(tmpStrA(5),1)<>"E") Then
+'      retBatt = tmpstrA(2)
+'      retHz = tmpStrA(3)
+'      retVt = tmpStrA(4)
+'      retSD = tmpStrA(5)
+'      retSuccess = RC_OK
+'      ErrCode = 0
+'    Else
+'      retBatt = ce_NoData
+'      retHz = ce_NoData
+'      retVt = ce_NoData
+'      retSD = ce_NoData
+'      ErrCode = Mid(tmpStrA(5),2,3) 'Remove the letter "E"
+'    EndIf
+'  Else
+'    'if there was no reply from the instrument we have to send the cancel command, we might have to do this several times to get the instrument to stop
+'    ComStr = ""
+'    For  lcOne = 1 To 3 Step 1
+'      SerialOut(cMyComPort,"*ST0" & cCRLF,"",0,0)
+'      SerialIn(ComStr,cMyComPort,500,-1,1)
+'
+'      If ComStr = cACK Then
+'        ExitFor
+'      Else
+'        Delay(1,5,Sec)
+'      EndIf
+'    Next lcOne
+'
+'  EndIf
+'EndSub
+'
+Public a_envoie
+'Measure at a position given by the operator.
+'For simplicity in this example it is assumed the instrument is configured correctly for the type of Prism that is used
+'If all went well and valid values are returned the retSuccess parameter will contain the constant 'RC_OK' which can be used to check for further handling
+Sub MeasureAtPos(retSuccess As Long, StartHz As Float, StartVt As Float,StartDist As Float, retHz As Float, retVt As Float, retSD As Float, retBatt As Long, ErrCode As Long)
+
+  Dim tmpStrA(5) As String
+  a_envoie = a_envoie +1
+
+  retSuccess = RC_ERROR
+  ComStr = ""
+  StrToSend = "*ST4 " & FormatFloat(StartHz,"%6.4f") & "," & FormatFloat(StartVt,"%6.4f")
+  CommandeEnvoyee = StrToSend
+  SerialFlush(cMyComPort)
+  SerialOut(cMyComPort,StrToSend & cCRLF,"",0,0)
+  Delay(1,5,Sec)
+
+  If SerialInChk(cMyComPort) = 1 Then
+    'We probably received a NAK back as there might be something wrong with the values we send
+    SerialIn(ComStr,cMyComPort,300,-1,1)
+    ack = "Nack"
+    If ComStr = cNAK Then
+      retSuccess = cCom_HasNAK
+    EndIf
+  Else
+    ack = "OK"
+    'Wait for up to 60 seconds for the instrument to measure
+    SerialIn(ComStr,cMyComPort,6000,cCRLF,cMaxComsLen)
+
+    If Len(ComStr) > 10 Then
+
+      debug1 = ComStr
+      'First remove the CMD part of the returned string, this is "*ST4 " with a length of 5
+      ComStr = Mid(ComStr,6,Len(ComStr)-5)
+
+      'Now split the rest into single fields
+      SplitStr(tmpStrA(1),ComStr,",",5,5)
+      valeur1 = tmpStrA(5)
+      valeur2 = StartDist
+      valeur = ABS(valeur1-valeur2)
+
+      'If there are no errors in the 5th field (Slope distance) then continue
+      If valeur2 <> 0 Then
+        If (Left(tmpStrA(5),1)="E") Then
+          retBatt = ce_NoData
+          retHz = ce_NoData
+          retVt = ce_NoData
+          retSD = ce_NoData
+          ErrCode = Mid(tmpStrA(5),2,3) 'Remove the letter "E"
+        Else
+          If (ABS(valeur1-valeur2)<Seuil_distance)  Then
+            retBatt = tmpstrA(2)
+            retHz = tmpStrA(3)
+            retVt = tmpStrA(4)
+            retSD = tmpStrA(5)
+            retSuccess = RC_OK
+            ErrCode = 0
+          Else
+            retBatt = ce_NoData
+            retHz = ce_NoData2
+            retVt = ce_NoData2
+            retSD = ce_NoData2
+            ErrCode = Mid(tmpStrA(5),2,3) 'Remove the letter "E"
+          EndIf
+        EndIf
+      Else
+        If (Left(tmpStrA(5),1)<>"E")  Then
+          retBatt = tmpstrA(2)
+          retHz = tmpStrA(3)
+          retVt = tmpStrA(4)
+          retSD = tmpStrA(5)
+          retSuccess = RC_OK
+          ErrCode = 0
+
+        Else
+          retBatt = ce_NoData
+          retHz = ce_NoData
+          retVt = ce_NoData
+          retSD = ce_NoData
+          ErrCode = Mid(tmpStrA(5),2,3) 'Remove the letter "E"
+
+
+        EndIf
+      EndIf
+    EndIf
+  EndIf
+  Call StopMeasurement
+EndSub
+Public debug4 As String'Float
+Public debug5 As String
+Public debug400 As Float
+Public debug5b As Float
+Public debug6 As String
+Public debug7 As String
+Public debug7b As Float
+Public debug8 As String
+Public debug9 As String * 100
+Public debug4Vt As String'Float
+Public test As String * 100
+Public EntierHz(2) As String
+Public EntierVt(2) As String
+Public debug2
+Public seuil_laser = 20'en mm
+Public ValeurLaserRelatif As Float
+
+
+Sub LASERAtPos(retSuccess As Long,StartDist As Float,retHz As Float, retVt As Float, retSD As Float, retBatt As Long, ErrCode As Long)
+
+  Dim tmpStrA(5) As String
+  a_envoie = a_envoie +1
+
+  retSuccess = RC_ERROR
+  SerialFlush(cMyComPort)
+  'debug2 = "Partie LASER"
+  retSuccess = RC_ERROR
+  ComStr = ""
+
+  StrToSend = "*ST3"
+  CommandeEnvoyee = StrToSend
+  SerialFlush(cMyComPort)
+  SerialOut(cMyComPort,StrToSend & cCRLF,"",0,0)
+  Delay(1,5,Sec)
+  If SerialInChk(cMyComPort) = 1 Then
+    'We probably received a NAK back as there might be something wrong with the values we send
+    SerialIn(ComStr,cMyComPort,300,-1,1)
+    ack = "Nack"
+    If ComStr = cNAK Then
+      retSuccess = cCom_HasNAK
+    EndIf
+  Else
+    ack = "OK"
+    'Wait for up to 60 seconds for the instrument to measure
+    SerialIn(ComStr,cMyComPort,6000,cCRLF,cMaxComsLen)
+    'debug4 = StartHz
+    If Len(ComStr) > 10 Then
+
+      debug1 = ComStr
+      'First remove the CMD part of the returned string, this is "*ST4 " with a length of 5
+      ComStr = Mid(ComStr,6,Len(ComStr)-5)
+      'Now split the rest into single fields
+      SplitStr(tmpStrA(1),ComStr,",",5,5)
+      valeur1 = tmpStrA(5)
+      valeur2 = StartDist
+      valeur = ABS(valeur1-valeur2)
+
+      'If there are no errors in the 5th field (Slope distance) then continue
+      If (Left(tmpStrA(5),1)="E") Then
+        retBatt = ce_NoData
+        retHz = ce_NoData
+        retVt = ce_NoData
+        retSD = ce_NoData
+        ErrCode = Mid(tmpStrA(5),2,3) 'Remove the letter "E"
+      Else
+        retBatt = tmpstrA(2)
+        retHz = tmpStrA(3)
+        retVt = tmpStrA(4)
+        retSD = tmpStrA(5)
+        retSuccess = RC_OK
+        ErrCode = 0
+      EndIf
+
+    EndIf
+
+    Call StopMeasurement
+  EndIf
+EndSub
+
+Sub StopMeasurement
+  SerialFlush(cMyComPort)
+  Dim lcOne As Long
+  Const cStopMeasCMD As String = "*ST0" & cCRLF
+  'if there was no reply from the insturment we have to send the cancel command, we might have to do this several times to get the instrument to stop
+  ComStr = ""
+  
+  For  lcOne = 1 To 5 Step 1
+    SerialOut(cMyComPort,cStopMeasCMD,"",0,0)
+    Call WriteStatusMSG("[Tx]" & cStopMeasCMD)
+    
+    SerialIn(ComStr,cMyComPort,500,-1,1)
+    Call WriteStatusMSG("[Rx]" & ComStr & "[LEN:" & Len(ComStr) & "]")
+    
+    If ComStr = cACK Then
+      ExitFor
+    Else
+      SerialFlush(cMyComPort)
+      Delay(1,5,Sec)
+    EndIf
+  Next lcOne
+EndSub
+
+'General routine to allow writting of messages to a comport for debugging or local logging if you write it to a file
+  'This routine needs customizing to maybe make daily files or files per measurement round. Thje routine is kept simple for demonstration purposes
+Public StatusMSG As String * cMaxComsLen
+Sub WriteStatusMSG(WriteMSG As String * cMaxComsLen)
+  Dim hFile As Long, tmpFileSize As Long
+  Dim ComsLogFileName As String * 64
+  Dim ComsLogFileName_Old As String * 64
+  Dim CurTimeStr As String * 32
+  'Const cMaxMSGFFileSize = 5*1024*1024 'avbout 5M
+  CurTimeStr = Status.Timestamp(5,1)
+  CurTimeStr = Left(CurTimeStr,10)
+  ComsLogFileName = "CPU:ComLog_" & CurTimeStr & ".Log"
+  
+  'Now make the old filename to check if we need to remove it
+  MSG_CurTime = Status.Timestamp(1,1)
+  MSG_CurTime -= (14 * 86400) 'Remove 14 days in seconds (1day = 86400seconds)
+  CallTable(TimeTable)
+  CurTimeStr = TimeTable.MSG_CurTime(5,1)
+  CurTimeStr = Left(CurTimeStr,10)
+  ComsLogFileName_Old = "CPU:ComLog_" & CurTimeStr & ".Log"
+  FileManage(ComsLogFileName_Old,8)
+  
+
+	StatusMSG = Trim(WriteMSG)
+	'Replace here some know none-printable ASCII characters
+	StatusMSG = Replace(Replace(StatusMSG,cCR,"{Cr}"),cLF,"{Lf}")
+	StatusMSG = Replace(Replace(StatusMSG,cNAK,"{NaK}"),cACK,"{ACK}")
+
+	hFile = FileOpen(ComsLogFileName,"a",-1)
+	tmpFileSize = FileSize(hFile)	
+	If tmpFileSize = 0 Then FileWrite(hFile,"LoggerProgram:" & Status.ProgName & " StationName:" & Status.StationName & " new file created at: " & Status.TimeStamp(4,1) & cLF,0)
+	WriteMSG = Status.TimeStamp(4,1) & "," & StatusMSG
+	FileWrite(hFile,WriteMSG & cLF,0)
+	hFile = FileClose(hFile)
+	
+	CallTable MSGLog
+EndSub
+
+''ApplyandRestartSequence
+'  Dim AcceptChange As Boolean = False
+'
+'  Select Case cMyComPort
+'  Case ComRS232,Com1,Com2
+'    AcceptChange = True
+'    #If LoggerType = CR1000
+'  Case Com3,Com4
+'    AcceptChange = True
+'    #EndIf
+'  Case Else
+'    AcceptChange = False
+'  EndSelect
+'
+'  If AcceptChange Then
+'    SetSetting("StationSettingsTable.ApplyAndRestart",1)
+'  EndIf
+'EndApplyandRestartSequence
+
+
+ShutdownBegin
+  'Some housekeeping when the program stops
+  SerialClose(cMyComPort)
+ShutdownEnd
+
+Public p As Long
+Public j As Float
+Public compt
+'Public a As Long
+'Public b As Long
+Public k As Float
+Public m As Float
+Public l As Float
+Public duree_scan = 1
+Public taille_fenetre = 1
+Public Unite_scan_2S3M4H As String
+
+'Main Program
+BeginProg
+  Unite_scan_2S3M4H = Sec
+  SW12 (0)
+  Delay (0,15,Sec)
+  SW12 (1)
+  Delay (0,3,Sec)
+  Call WriteStatusMSG("[LGR] **** New Program Start **** (" & Status.ProgName & ")")
+  
+  Call Declaration_Prism
+Call Declaration_Laser
+
+    'timeC= true
+  'when the program starts already open the serialport for the total station
+  SerialOpen(cMyComPort,9600,0,0,1024)
+  'ReadingNum = 0
+  IsMeasuring = False
+  Scan (1,Sec,0,0)
+  PanelTemp (PTemp,50)
+  Battery (batt_volt)
+  If NOT IsMeasuring Then
+If TimeIntoInterval(0,duree_scan,Unite_scan_2S3M4H) Then
+        Call WriteStatusMSG("[PRG]Round of observations should start")
+        StartMeasuring_FullInit = True
+      EndIf
+    EndIf
+
+    If StartMeasuring_FullInit Then
+      TurnOn = true
+      InitializeInstrument = True
+      GetPowerSourceInfo = True
+      Bool_GetPowerSourceInfo = False
+      ReadCompensator = True
+      Bool_GetBubbleReadings = False
+      StartMeasuring = True
+      Bool_searchWindow = False
+      CancelMeasuringByUser = False
+      StartMeasuring_FullInit = False
+    EndIf
+    
+    'Turn On
+    If TurnOn Then
+      Timer (15,Sec,2)
+OA3402P_STA1_Voltage = batt_volt
+OA3402P_STA1_Frequence = 1/duree_scan
+Call WriteStatusMSG("[PRG]Turning instrument ON")
+      AllIsOkay = -2 'Just a value to indicate where we are in the process
+      'Initialize port and instrument
+      Call SwitchOnRTS(AllIsOkay)
+      If AllIsOkay = RC_OK Then
+        Station_IsON = True
+        Bool_AllIsOkay = AllIsOkay
+        Call GetInstrumentDetails(AllIsOkay, InstrumentName, SN, ROMVersion, EDMROMVersion)
+        'You can collect more information like:
+        '- battery/input voltage status
+        '- Internal temperature
+
+        'If you collected the information from the total station then maybe save it for documentation purposes
+        If AllIsOkay = RC_OK Then
+          CallTable StationInfo
+        EndIf
+      EndIf
+
+      'Add here code to initialize the instrument to your prefered default values
+
+      TurnOn = False
+    EndIf
+
+        
+    If InitializeInstrument Then
+      Call WriteStatusMSG("[PRG]Initializing")
+      'Disabling Resume function
+      Call SendMyCMD(AllIsOkay, "*/PJ 1,,,,","",5,0)
+      Delay(0,1,Sec)
+      Call SendMyCMD(AllIsOkay, "/Dl 1","",5,0)
+      ' Window settings
+      If searchWindow = true Then
+      Call SendMyCMD(AllIsOkay,"*/PA 1,0," & FormatFloat(taille_fenetre,"%f") & "," & FormatFloat(taille_fenetre,"%f"),"",2,0)
+      Bool_searchWindow = AllIsOkay
+        '  searchWindow = false
+      EndIf
+  
+      ' All Prism Settings
+      CurrentPrismConst  = 0
+      If AllPrismSendSettings = true Then
+        'StrToSend = "*/PG Prism" & "," & FormatFloat(PrismConst(1),"%f") & "," & FormatFloat(PrismAperture(1),"%f")
+        StrToSend = "*/PG 0," & FormatFloat(PrismConst(1),"%f") & "," & FormatFloat(PrismAperture(1),"%f")
+        SendMyCMD(AllIsOkay, StrToSend, "", 2,0)
+        Bool_ALL_PrismSettings = AllIsOkay
+        'AllPrismSendSettings = false
+      EndIf
+      
+      InitializeInstrument = False
+    EndIf
+
+    'Read CoPrismnsator
+    If ReadCompensator Then
+      Call WriteStatusMSG("[PRG]ReadingCompensator")
+      Call GetBubbleReadingsAtPos(AllIsOkay, Bubble_HzPos,Bubble_VtPos,Bubble_X, Bubble_Y ,ErrCode)
+OA3402P_STA1_BulleX = Bubble_X
+OA3402P_STA1_BulleY = Bubble_Y
+Bool_GetBubbleReadings = AllIsOkay
+      If AllIsOkay = RC_OK Then
+        CallTable StationBubble
+      EndIf
+      ReadCompensator = False
+  
+      ' Enregistrement du compensateur dans la table
+  
+  '    ReadingNum = ReadingNum + 1
+  '    CurrentPrism = "Compensator"
+  '    CurrentReadingNum = ReadingNum
+  '
+  '    currentFaceID = 0
+  '    ReadingData(1) = Bubble_HzPos
+  '    ReadingData(2) = Bubble_VtPos
+  '    ReadingData(3) = 0
+  
+      'If Bubble_HzPos = -99999 OR  Bubble_VtPos=-9999 Then
+      'If Bubble_HzPos = ce_NoData OR  Bubble_VtPos = ce_NoData Then
+      If AllIsOkay <> RC_OK Then
+        currentErrorCode = -1002
+      Else
+        currentErrorCode = 0
+      EndIf
+    EndIf
+    
+    
+'    Temp = Temp
+'    Pressure = Pressure
+'    Humidity = Humidity
+
+    'CallTable M_DataTable
+    ' Fin enregistremenr valeurs compensateur
+    'Get PowerSource
+
+    If GetPowerSourceInfo Then
+      Call WriteStatusMSG("[PRG]Getting Power source Info")
+      Call StationBatteryInfo(AllIsOkay, StationPowerSource, StationPowerStatus, StationBatteryPercent, StationVoltage)
+      Bool_GetPowerSourceInfo = AllIsOkay
+      GetPowerSourceInfo = False
+    EndIf
+
+    ' Start Measuring
+    'Lancer mesures ########################################################################################################################
+    ' *PA 1,0,2.5,2.5
+    NB_ref = -1
+    NB_ref_OK = -1
+    Taux_Visees = -1
+    Taux_Visees_Sans_Ref = -1
+    'For jj = 1 TO 20
+    If StartMeasuring Then
+      Call WriteStatusMSG("[PRG]Start of measurementround")
+      IsMeasuring = True
+      StartMeasuring = False
+
+      For i = 1 To PrismCount
+
+        'ReadingNum = ReadingNum + 1
+
+        ' Single Prism settings
+        '>>>>>>>>> I M P O R T A N T  N O T E  <<<<<<<<<<
+        '>>> The prismConst() array and PrismAperture() array are not filled in the initialisation routine, only the first entry
+        '>>> therefore any value at a position higher than 1 is 0 and might be wrong !!!
+        '>>>>>>>>>>>>> ---- <<<<<<<<<<<<<<<<
+If SinglePrismSettings = true Then
+          If PrismConst(i) <> PrismConst(i-1) OR PrismAperture(i) <> PrismAperture(i-1) Then
+            'StrToSend = "*/PG Prism" & "," & PrismConst(i) & "," & PrismAperture(i)
+            StrToSend = "*/PG 0," & PrismConst(i) & "," & PrismAperture(i)
+            SendMyCMD(AllIsOkay, StrToSend, "", 2,0)
+            Bool_SinglePrismSettings = AllIsOkay
+          EndIf
+        EndIf
+
+
+        'Delay (0,1,sec)
+        ' take measurment
+        VarPtr = @Result_Hz(i)
+        CurPtName = !(VarPtr)
+        Call WriteStatusMSG("[PRG]Measuring F1 PrismPosition " & i & " " & CurPtName)
+        MeasureAtPos(AllIsOkay,PrismHAR(i), PrismVt(i),PrismDist(i), Result_Hz(i), Result_Vt(i), Result_SD(i), StationBatteryPercent, ErrCode)
+        '  Delay (0,2,sec)
+        'Call StopMeasurement
+
+        ' Delay (0,3,sec)
+'        CurrentPrism = PrismName(i)
+'        CurrentReadingNum = ReadingNum
+'
+'        currentFaceID = 1
+'        ReadingData(1) = Result_Hz(i)
+'        ReadingData(2) = Result_Vt(i)
+'        ReadingData(3) = Result_SD(i)
+
+        'If  Result_Vt(i)=-99999 OR  Result_Hz(i)=-99999 OR  Result_SD(i) =-99999 Then
+        'If Result_Vt(i) = ce_NoData OR  Result_Hz(i) = ce_NoData OR  Result_SD(i) = ce_NoData Then
+        If AllIsOkay <> RC_OK Then
+          currentErrorCode = -1002
+        Else
+          currentErrorCode = 0
+        EndIf
+
+'        CurrentPrismConst = PrismConst(i)
+'        Temp = Temp
+'        Pressure = Pressure
+'        Humidity = Humidity
+       ' CallTable M_DataTable
+        'Mechanism to allow early cancelation by user
+        If CancelMeasuringByUser Then
+          Call WriteStatusMSG("[PRG]Cancel-by-User F1 loop")
+          ExitFor
+        EndIf
+Next
+      
+      If NOT CancelMeasuringByUser Then
+        'Changement de face et mesures
+        ' Changement de face !!
+        For i = 1 To PrismCount
+PrismPtr = PrismCount - i + 1
+          'ReadingNum = ReadingNum +1
+          'PrismVtF2(PrismPtr) = 400-PrismVt(PrismPtr)
+          '>>>>>>> Above was duplicate line <<<<<<<<<<<<<<<<
+          
+          PrismVtF2(PrismPtr) = 400-PrismVt(PrismPtr)
+          If PrismHAR(PrismPtr) >= 200 Then
+            PrismHARF2(PrismPtr) = PrismHAR(PrismPtr)-200
+          Else
+            PrismHARF2(PrismPtr) = PrismHAR(PrismPtr)+200
+          EndIf
+          
+          VarPtr = @Result_Hz(PrismPtr)
+          CurPtName = !(VarPtr)
+          Call WriteStatusMSG("[PRG]Measuring F2 PrismPosition " & PrismPtr & " " & CurPtName)
+          MeasureAtPos(AllIsOkay, PrismHARF2(PrismPtr),PrismVtF2(PrismPtr),PrismDist(PrismCount-i+1), Result_HzF2(PrismPtr), Result_VtF2(PrismPtr), Result_SDF2(PrismPtr), StationBatteryPercent, ErrCode)
+          'Call StopMeasurement
+  '
+  '        CurrentPrism = PrismName(PrismPtr)
+  '        CurrentReadingNum = ReadingNum
+  '        currentFaceID = 2
+  '        ReadingData(1) = Result_HzF2(PrismPtr)
+  '        ReadingData(2) = Result_VtF2(PrismPtr)
+  '        ReadingData(3) = Result_SDF2(PrismPtr)
+  
+          'Temperature Humidity
+          'If  Result_HzF2(PrismPtr)=-99999 OR Result_VtF2(PrismPtr) = 99999 OR  Result_SDF2(PrismPtr)=  99999 Then
+          'If Result_HzF2(PrismPtr) = ce_NoData OR Result_VtF2(PrismPtr) = ce_NoData OR Result_SDF2(PrismPtr) = ce_NoData Then
+          If AllIsOkay <> RC_OK Then
+            currentErrorCode =-1002
+          Else
+            currentErrorCode = 0
+          EndIf
+  '
+  '        CurrentPrismConst = PrismConst(PrismPtr)
+  '        Temp = Temp
+  '        Pressure = Pressure
+  '        Humidity = Humidity
+  
+          ' Delay (0,5,sec)
+          'Mechanism to allow early cancelation by user
+          If CancelMeasuringByUser Then
+            Call WriteStatusMSG("[PRG]Cancel-by-User F2 loop")
+            ExitFor
+          EndIf
+Next
+      EndIf
+      
+      
+      If NOT CancelMeasuringByUser Then
+        TurnOFF = True
+      EndIf 
+t = 0
+        For a = 1 to PrismCount
+	    if Result_Hz(a) > 0 and Result_HzF2(a)>0 Then
+	    t = t+1
+	    EndIf
+        Next
+        Taux_Visees = (t*100)/PrismCount
+        
+      CallTable RawData
+      CallTable Ref_TauxVisees
+      Call WriteStatusMSG("[PRG]End of round of observations")
+      IsMeasuring = False
+      CancelMeasuringByUser = False
+    EndIf
+    ' Next jj
+    '############################################################################################################################################'=======================================================
+      '======================Partie LASER=====================
+      '=======================================================
+
+      ' All Prism Settings
+      CurrentPrismConst  = 0
+      p = 0
+      j= 0
+      If AllPrismSendSettings = true Then
+        'StrToSend = "*/PG Prism" & "," & FormatFloat(PrismConst(1),"%f") & "," & FormatFloat(PrismAperture(1),"%f")
+        StrToSend = "*/PG 2," & FormatFloat(LASERConst(1),"%f") & "," & FormatFloat(LASERAperture(1),"%f")
+        SendMyCMD(AllIsOkay, StrToSend, "", 2,0)
+        Bool_ALL_PrismSettings = AllIsOkay
+        'AllPrismSendSettings = false
+      EndIf
+      For i = 1 To LaserCount
+        SplitStr(EntierHz(1),LaserHAR(i),".",2,5)
+        SplitStr(EntierVt(1),LaserVt(i),".",2,5)
+        debug4 = LaserHAR(i)'StartHz
+        debug4Vt = LaserVt(i)'StartVt
+        debug5 = EntierHz(1)'FormatLong (LaserHAR(i),"%03d"))
+        debug5b = FormatLong (LaserHAR(i),"%3d")
+        debug400 = (debug4 - debug5b)*1000
+        debug6 = EntierHz(2)'FormatLong ((debug4 - debug5b)*1000,"%d0")
+        debug7 = EntierVt(1)'FormatLong (LaserVt(i),"%03d")
+        debug7b = FormatLong (LaserVt(i),"%3d")
+        debug8 = EntierVt(2)'FormatLong ((debug4Vt - debug7b)*1000,"%d0")
+        debug9 = "*DHA" & debug5 & debug6 & "VA" & debug7 & debug8
+        SendMyCMD(AllIsOkay, "*DHA" & debug5 & debug6 & "VA" & debug7 & debug8,"",5,0)
+        'Call SendMyCMD(AllIsOkay, "*DHA3000000VA1200000","",5,0)
+        Delay(0,15,Sec)
+        'Delay (0,1,sec)
+        ' take measurment
+        'debug2 = "Partie LASER"
+        'VarPtr = @Result_HzLaser(i)
+        'CurPtName = !(VarPtr)
+        Call WriteStatusMSG("[PRG]Measuring LASERPosition " & i & "(" & p  &")"& " " & CurPtName)
+        LASERAtPos(AllIsOkay,LaserDist(i),Result_HzLaser(i), Result_VtLaser(i), Result_SDLaser(i), StationBatteryPercent, ErrCode)
+        Call StopMeasurement
+        If AllIsOkay <> RC_OK Then
+          currentErrorCode = -1002
+        Else
+          currentErrorCode = 0
+        EndIf
+        'Mechanism to allow early cancelation by user
+        If CancelMeasuringByUser Then
+          Call WriteStatusMSG("[PRG]Cancel-by-User F1 loop")
+          ExitFor
+        EndIf
+
+      Next
+      If NOT CancelMeasuringByUser Then
+        TurnOFF = True
+      EndIf
+OA3402P_STA1_timerMesures = Timer(15,Sec,4)
+compt = 0
+      For a=1 To LaserCount
+        compt = compt+1
+        k = Result_HzLaser(a)
+        l = Result_VtLaser(a)
+        m = Result_SDLaser(a)
+        If m>0 AND l>0 Then
+          Result_Z(a) = m*SIN((100-l)*(3.14159/200))
+          Result_Z0(a) = (Result_Z(a)-LaserDist(a))*1000
+          ValeurLaserRelatif =  (Result_Z(a)-LaserDist(a))*1000
+          If ABS((Result_Z(a)-LaserDist(a))*1000)<seuil_laser Then
+            Result_Z0(a) = (Result_Z(a)-LaserDist(a))*1000
+          Else
+            Result_Z0(a) = "NAN"
+          EndIf
+        Else
+          Result_Z(a) = -99990
+          Result_Z0(a) = "NAN"
+        EndIf
+      Next
+      StrToSend = "*/PG 0," & FormatFloat(PrismConst(1),"%f") & "," & FormatFloat(PrismAperture(1),"%f")
+      SendMyCMD(AllIsOkay, StrToSend, "", 2,0)
+      Delay(0,2,Sec)
+      CallTable LASER
+      CallTable LASER_RawData
+      CallTable RawDataCOMPLET
+      Call WriteStatusMSG("[PRG]End of round of observations")
+      IsMeasuring = False
+      CancelMeasuringByUser = False'Turn Off
+    If TurnOff Then
+      Call WriteStatusMSG("[PRG]Turning station OFF")
+      Call TurnOffRTS(AllIsOkay)
+      ComStr = "*** User Turned Station OFF"
+      TurnOFF = False
+      Station_IsON = False
+    EndIf
+
+    If NOT IsMeasuring Then
+      If SendManualStr Then
+        Call WriteStatusMSG("[PRG]Manual CMD")
+        SendManualStr = False
+        SendManual_StationReply = "-waiting-"
+        Delay(0,1,Sec) 'delay to allow LoggerNet to see the replystring change :)
+        Call SendMyCMD(AllIsOkay, SendManual_StrToSend, SendManual_StationReply, SendManual_ACKTime, SendManual_StrReplyTime)
+      EndIf
+    EndIf
+    '
+    '    If timeC = true Then
+    '      If TimeCount > 2 Then
+    '        SW12 (1)
+    '        'Delay (0,30,Min)
+    '        timeC = false
+    '        timeNow = true
+    '        TimeCount = 0
+    '      EndIf
+    '    EndIf
+    '
+    '    If timeNow = true Then
+    '      time = time +1
+    '      If time > 5 Then
+    '        SW12 (0)
+    '        time = 0
+    '        timeNow = false
+    '        timeC = true
+    '      EndIf
+    '    EndIf
+
+
+  NextScan
+EndProg
